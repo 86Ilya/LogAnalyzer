@@ -24,6 +24,7 @@ config = {
     "MAX_ERRORS_PERCENT": 1,
 }
 
+default_cfg_file = "config.cfg"
 
 regexprs = {
     "LOG_NAME_REGEXP": r'^nginx-access-ui\.log-(\d{8})(\.\w*){0,1}',
@@ -261,16 +262,30 @@ def prepare_run(cfg):
                         format=log_format, datefmt=log_datefmt)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default=None, help=u'Путь к конфиг файлу.')
+    parser.add_argument('--config', default=None, nargs='*', help=u'Путь к конфиг файлу.')
     args = parser.parse_args()
 
-    if args.config:
+    # Это конечно не однозначно, но тут мы проверяем не задали ли пользователь --config без указания имени файла?
+    if args.config is not None:
+        if len(args.config) == 0:
+            cfg_file = default_cfg_file
+        else:
+            cfg_file = args.config[0]
+
         logging.info(u"Читаем конфиг файл.")
         # Мы обновляем наш локальный конфиг данными из файла-конфига
-        if not update_config_from_file(args.config, cfg):
+        if not update_config_from_file(cfg_file, cfg):
             # Если обнаружили ошибку то выходим.
             return
-        logging.info(u"Конфиг файл обработан успешно.")
+
+        log = logging.getLogger()
+        for hdlr in log.handlers[:]:
+            log.removeHandler(hdlr)
+
+        file_handler = logging.FileHandler(cfg["LOGFILE"], 'a')
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=log_datefmt))
+
+        log.addHandler(file_handler)
 
     # Проверяем папку с логами на существование
     if not os.path.isdir(cfg["LOG_DIR"]):
@@ -327,3 +342,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    logging.shutdown()
