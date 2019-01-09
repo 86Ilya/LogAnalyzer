@@ -248,12 +248,16 @@ def update_config_from_file(fname, current_config):
     return True
 
 
-def main():
+def prepare_run(cfg):
+    """
+    :param dict cfg:
+    :return:
+    """
     import argparse
 
     log_format = '%(asctime)s %(levelname).1s %(message)s'
     log_datefmt = '%Y.%m.%d,%H:%M:%S'
-    logging.basicConfig(filename=config["LOGFILE"], level=config["LOGLEVEL"],
+    logging.basicConfig(filename=cfg["LOGFILE"], level=cfg["LOGLEVEL"],
                         format=log_format, datefmt=log_datefmt)
 
     parser = argparse.ArgumentParser()
@@ -262,27 +266,36 @@ def main():
 
     if args.config:
         logging.info(u"Читаем конфиг файл.")
-        # Если обнаружили ошибку то выходим.
-        if not update_config_from_file(args.config, config):
+        # Мы обновляем наш локальный конфиг данными из файла-конфига
+        if not update_config_from_file(args.config, cfg):
+            # Если обнаружили ошибку то выходим.
             return
-        logging.info(u"Конфиг обработан успешно.")
+        logging.info(u"Конфиг файл обработан успешно.")
 
     # Проверяем папку с логами на существование
-    if not os.path.isdir(config["LOG_DIR"]):
-        logging.error(u"Каталога с логами {} не существует! Выходим.".format(config["LOG_DIR"]))
+    if not os.path.isdir(cfg["LOG_DIR"]):
+        logging.error(u"Каталога с логами {} не существует! Выходим.".format(cfg["LOG_DIR"]))
         return
 
     # Проверяем папку с отчётами на существование
-    if not os.path.isdir(config["REPORT_DIR"]):
+    if not os.path.isdir(cfg["REPORT_DIR"]):
         # Если не существует, то создадим
         try:
-            logging.info(u"Каталога с отчётами {} не существует! Создадим его".format(config["REPORT_DIR"]))
-            os.mkdir(config["REPORT_DIR"])
-            logging.info(u"Каталога с отчётами {} Успешно создан".format(config["REPORT_DIR"]))
+            logging.info(u"Каталога с отчётами {} не существует! Создадим его".format(cfg["REPORT_DIR"]))
+            os.mkdir(cfg["REPORT_DIR"])
+            logging.info(u"Каталога с отчётами {} Успешно создан".format(cfg["REPORT_DIR"]))
         except OSError as error:
             logging.error(u"Ошибка создания каталога {}: {}\n"
-                          u"Завершаем работу.".format(config["REPORT_DIR"], error))
+                          u"Завершаем работу.".format(cfg["REPORT_DIR"], error))
             return
+    return True
+
+
+def main():
+
+    if not prepare_run(config):
+        # Если произошла какая-то ошибка при подготовке к запуску анализа логов, то выходим.
+        return
 
     logging.info(u"Ищем последний файл лога...")
     last_log = get_recent_log(config["LOG_DIR"], regexprs["LOG_NAME_REGEXP"])
