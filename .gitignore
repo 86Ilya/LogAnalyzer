@@ -1,0 +1,7 @@
+*.pyc
+build
+dist
+LogAnalayzer.egg-info
+log_analyzer/log
+log_analyzer/reports
+
