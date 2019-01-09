@@ -84,7 +84,7 @@ def read_log(log_full_name, file_type):
     """
     f_open = gzip.open if file_type == '.gz' else io.open  # TODO Во втором питоне gzip.open не понимает encoding
     try:
-        for line in f_open(log_full_name, mode='r', encoding="utf-8"):
+        for line in f_open(log_full_name, mode='r'):
             yield line
     except IOError as exception:
         logging.exception(u"Проблема с чтением из лог файла: {}".format(exception))
@@ -165,7 +165,6 @@ def calculate_statistic(log_iterator, nginx_regex, report_size, max_errors_perce
             mismatch_count += 1
 
     errors_count = 100.0 * mismatch_count / all_requests_count
-    print errors_count
     if errors_count >= max_errors_percent:
         logging.error(u"Слишком много ошибок при обработке лог-файла: {:.4f}%\n Завершаем работу.".format(errors_count))
         raise ValueError("Слишком много ошибок при обработке лог-файла.")
@@ -267,6 +266,23 @@ def main():
         if not update_config_from_file(args.config, config):
             return
         logging.info(u"Конфиг обработан успешно.")
+
+    # Проверяем папку с логами на существование
+    if not os.path.isdir(config["LOG_DIR"]):
+        logging.error(u"Каталога с логами {} не существует! Выходим.".format(config["LOG_DIR"]))
+        return
+
+    # Проверяем папку с отчётами на существование
+    if not os.path.isdir(config["REPORT_DIR"]):
+        # Если не существует, то создадим
+        try:
+            logging.info(u"Каталога с отчётами {} не существует! Создадим его".format(config["REPORT_DIR"]))
+            os.mkdir(config["REPORT_DIR"])
+            logging.info(u"Каталога с отчётами {} Успешно создан".format(config["REPORT_DIR"]))
+        except OSError as error:
+            logging.error(u"Ошибка создания каталога {}: {}\n"
+                          u"Завершаем работу.".format(config["REPORT_DIR"], error))
+            return
 
     logging.info(u"Ищем последний файл лога...")
     last_log = get_recent_log(config["LOG_DIR"], regexprs["LOG_NAME_REGEXP"])

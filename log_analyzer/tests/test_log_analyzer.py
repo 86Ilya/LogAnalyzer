@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 
 import unittest
-from log_analyzer import log_analyzer
 import datetime
 import os
+
+try:
+    from log_analyzer import log_analyzer
+
+except ImportError as error:
+    print "Для работы тестов установите пакет log_analyzer"
+    raise error
 
 
 class TestLogAnalyzer(unittest.TestCase):
