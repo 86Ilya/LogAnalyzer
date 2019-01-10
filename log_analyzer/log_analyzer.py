@@ -83,10 +83,10 @@ def read_log(log_full_name, file_type):
     :param str log_full_name:
     :param str file_type:
     """
-    f_open = gzip.open if file_type == '.gz' else io.open  # TODO Во втором питоне gzip.open не понимает encoding
+    f_open = gzip.open if file_type == '.gz' else io.open
     try:
         for line in f_open(log_full_name, mode='r'):
-            yield line
+            yield line.decode('utf-8')  # Так универсальнее
     except IOError as exception:
         logging.exception(u"Проблема с чтением из лог файла: {}".format(exception))
         yield None
