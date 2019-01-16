@@ -8,6 +8,7 @@ import gzip
 import io
 from collections import defaultdict
 import logging
+import argparse
 
 # log_format ui_short '$remote_addr  $remote_user $http_x_real_ip [$time_local] "$request" '
 #                     '$status $body_bytes_sent "$http_referer" '
@@ -22,6 +23,8 @@ config = {
     "LOGFILE": None,
     "LOGLEVEL": logging.INFO,
     "MAX_ERRORS_PERCENT": 1,
+    "LOG_FORMAT": "%(asctime)s %(levelname).1s %(message)s",
+    "LOG_DATEFMT": "%Y.%m.%d,%H:%M:%S",
 }
 
 default_cfg_file = "config.cfg"
@@ -56,7 +59,7 @@ def get_recent_log(log_dir, regexp):
             try:
                 cur_date = datetime.strptime(match.group(1), '%Y%m%d')
             except ValueError as error:
-                logging.exception(u"Ошибка парсинга даты.{}\n Завершаем работу.".format(error))
+                logging.error(u"Ошибка парсинга даты.{}\n Завершаем работу.".format(error))
                 return
             try:
                 if recent_date < cur_date:
@@ -87,8 +90,8 @@ def read_log(log_full_name, file_type):
     try:
         for line in f_open(log_full_name, mode='r'):
             yield line.decode('utf-8')  # Так универсальнее
-    except IOError as exception:
-        logging.exception(u"Проблема с чтением из лог файла: {}".format(exception))
+    except IOError as error:
+        logging.error(u"Проблема с чтением из лог файла: {}".format(error))
         yield None
 
 
@@ -249,17 +252,11 @@ def update_config_from_file(fname, current_config):
     return True
 
 
-def prepare_run(cfg):
+def parse_arguments():
     """
-    :param dict cfg:
-    :return:
+    Функция парсит аргументы командной строки и возвращает имя конфиг файла (если задан)
+    :return str filename:
     """
-    import argparse
-
-    log_format = '%(asctime)s %(levelname).1s %(message)s'
-    log_datefmt = '%Y.%m.%d,%H:%M:%S'
-    logging.basicConfig(filename=cfg["LOGFILE"], level=cfg["LOGLEVEL"],
-                        format=log_format, datefmt=log_datefmt)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default=None, nargs='*', help=u'Путь к конфиг файлу.')
@@ -272,21 +269,41 @@ def prepare_run(cfg):
         else:
             cfg_file = args.config[0]
 
-        logging.info(u"Читаем конфиг файл.")
-        # Мы обновляем наш локальный конфиг данными из файла-конфига
-        if not update_config_from_file(cfg_file, cfg):
-            # Если обнаружили ошибку то выходим.
-            return
+        return cfg_file
 
-        log = logging.getLogger()
-        for hdlr in log.handlers[:]:
-            log.removeHandler(hdlr)
 
-        file_handler = logging.FileHandler(cfg["LOGFILE"], 'a')
-        file_handler.setFormatter(logging.Formatter(log_format, datefmt=log_datefmt))
+def init_logging(cfg):
+    """
+    Функция инициализирует логирование на основе полученного конфига.
+    :param dict cfg:
+    :return:
+    """
+    logging.basicConfig(filename=cfg["LOGFILE"], level=cfg["LOGLEVEL"],
+                        format=cfg["LOG_FORMAT"], datefmt=cfg["LOG_DATEFMT"])
 
-        log.addHandler(file_handler)
 
+def update_logging(cfg):
+    """
+    Функция обновляет логирование, на основе полученного конфига.
+    :param dict cfg:
+    :return:
+    """
+    log = logging.getLogger()
+    for hdlr in log.handlers[:]:
+        log.removeHandler(hdlr)
+
+    file_handler = logging.FileHandler(cfg["LOGFILE"], 'a')
+    file_handler.setFormatter(logging.Formatter(cfg["LOG_FORMAT"], datefmt=cfg["LOG_DATEFMT"]))
+
+    log.addHandler(file_handler)
+
+
+def prepare_run(cfg):
+    """
+    Функция проверяет перед запуском существуют ли необходимые папки, каталоги, по возможности создаёт их.
+    :param dict cfg:
+    :return:
+    """
     # Проверяем папку с логами на существование
     if not os.path.isdir(cfg["LOG_DIR"]):
         logging.error(u"Каталога с логами {} не существует! Выходим.".format(cfg["LOG_DIR"]))
@@ -307,9 +324,17 @@ def prepare_run(cfg):
 
 
 def main():
+    # Инициализируем логирование по первоначальному конфигу
+    init_logging(config)
+    # Парсим аргументы командной строки
+    config_file_name = parse_arguments(config)
+    # Если было задано имя конфиг файла, то обновляем локальный конфиг и обновляем логирование
+    if config_file_name:
+        update_config_from_file(config_file_name, config)
+        update_logging(config)
 
+    # Если произошла ошибка при подготовке к запуску то выходим
     if not prepare_run(config):
-        # Если произошла какая-то ошибка при подготовке к запуску анализа логов, то выходим.
         return
 
     logging.info(u"Ищем последний файл лога...")
@@ -341,5 +366,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.exception(e)
     logging.shutdown()
