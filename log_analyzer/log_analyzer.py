@@ -6,9 +6,13 @@ import re
 from datetime import datetime
 import gzip
 import io
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 import logging
 import argparse
+import json
+from string import Template
+import tempfile
+
 
 # log_format ui_short '$remote_addr  $remote_user $http_x_real_ip [$time_local] "$request" '
 #                     '$status $body_bytes_sent "$http_referer" '
@@ -30,9 +34,11 @@ config = {
 default_cfg_file = "config.cfg"
 
 regexprs = {
-    "LOG_NAME_REGEXP": r'^nginx-access-ui\.log-(\d{8})(\.\w*){0,1}',
+    "LOG_NAME_REGEXP": r'^nginx-access-ui\.log-(\d{8})(\.gz){0,1}$',
     "NGINX_REGEXP": r'\"[A-Z]+\s(?P<url>[\S]+)\s.+\"\s(?P<time>\S+)$',
 }
+
+NginxLog = namedtuple('NginxLog', ['name', 'date', 'extension'])
 
 
 def get_recent_log(log_dir, regexp):
@@ -43,41 +49,23 @@ def get_recent_log(log_dir, regexp):
     :param str regexp:
     :return:
     """
-    pattern = re.compile(regexp)
-    recent_log = None
-    recent_date = None
 
     files = os.listdir(log_dir)
+    logs_names_gen = match_log_name(files, regexp)
+    recent_log = logs_names_gen.next()
 
-    # Если каталог пуст то сразу выходим
-    if len(files) == 0:
-        return None
+    if not recent_log:
+        return
 
-    for file_name in files:
-        match = pattern.search(file_name)
-        if match:
-            try:
-                cur_date = datetime.strptime(match.group(1), '%Y%m%d')
-            except ValueError as error:
-                logging.error(u"Ошибка парсинга даты.{}\n Завершаем работу.".format(error))
-                return
-            try:
+    recent_date = recent_log[1]
+
+    for cur_log_name, cur_date, cur_log_ext in logs_names_gen:
                 if recent_date < cur_date:
                     recent_date = cur_date
-                    recent_log = match
-            # Так проще, чем задавать "нулевую" дату
-            except TypeError as error:
-                if not recent_date:
-                    recent_date = cur_date
-                    recent_log = match
-                else:
-                    raise error
+                    recent_log = cur_log_name, cur_date, cur_log_ext
 
     # Возвращаем имя лога, дату создания, расширение файла
-    if recent_log:
-        return recent_log.group(0), recent_date, recent_log.group(2)
-    else:
-        return None
+    return NginxLog(*recent_log)
 
 
 def read_log(log_full_name, file_type):
@@ -86,6 +74,7 @@ def read_log(log_full_name, file_type):
     :param str log_full_name:
     :param str file_type:
     """
+
     f_open = gzip.open if file_type == '.gz' else io.open
     try:
         for line in f_open(log_full_name, mode='r'):
@@ -101,6 +90,7 @@ def median(lst):
     :param list lst:
     :return float:
     """
+
     n = len(lst)
     if n < 1:
             return None
@@ -117,15 +107,25 @@ def serialize_report_dict(top_urls, report_dict):
     :param dict report_dict:
     :return str:
     """
-    json_pattern = '{{"count": {count}, "time_avg": {time_avg:.4f}, "time_max": {time_max},' \
-                   ' "time_sum": {time_sum}, "url": "{url}", "time_med": {time_med}, "time_perc": {time_perc:.4f},' \
-                   ' "count_perc": {count_perc:.2f}}},'
-    serialized_report = '['
+
+    report = []
+
     for url in top_urls:
         statistic = report_dict[url]
-        serialized_report += json_pattern.format(url=url, **statistic)
-    serialized_report += ']'
-    return serialized_report
+        report.append(
+            {
+                "url": url,
+                "count": statistic["count"],
+                "time_avg": statistic["time_avg"],
+                "time_max": statistic["time_max"],
+                "time_sum": statistic["time_sum"],
+                "time_med": statistic["time_med"],
+                "time_perc": statistic["time_perc"],
+                "count_perc": statistic["count_perc"]
+            }
+        )
+
+    return json.dumps(report)
 
 
 def calculate_statistic(log_iterator, nginx_regex, report_size, max_errors_percent):
@@ -153,12 +153,8 @@ def calculate_statistic(log_iterator, nginx_regex, report_size, max_errors_perce
 
     # Основной цикл обработки лога
     for line in log_iterator:
-        try:
-            # Ищем совпадение по шаблону
-            match = nginx_pattern.search(line)
-        except TypeError, e:
-            logging.error(u"Обнаружена ошибка при обработки строки из лог-файла: {}\n Завершаем работу.".format(e))
-            return None
+        # Ищем совпадение по шаблону
+        match = nginx_pattern.search(line)
         # Даже если совпадения не найдено, то верим в то что каждая строчка лога - это один запрос
         all_requests_count += 1
         if match:
@@ -169,7 +165,7 @@ def calculate_statistic(log_iterator, nginx_regex, report_size, max_errors_perce
             mismatch_count += 1
 
     errors_count = 100.0 * mismatch_count / all_requests_count
-    if errors_count >= max_errors_percent:
+    if errors_count > max_errors_percent:
         logging.error(u"Слишком много ошибок при обработке лог-файла: {:.4f}%\n Завершаем работу.".format(errors_count))
         raise ValueError("Слишком много ошибок при обработке лог-файла.")
 
@@ -184,7 +180,6 @@ def calculate_statistic(log_iterator, nginx_regex, report_size, max_errors_perce
         # time_sum ‐ суммарный $request_time для данного URL'а, абсолютное значение
         time_sum = sum(request_time_list)
         report[url]["time_sum"] = time_sum
-
         # count_perc ‐ сколько раз встречается URL, в процентнах относительно общего числа запросов
         report[url]["count_perc"] = 100.0 * count / all_requests_count
         # time_perc ‐ суммарный $request_time для данного URL'а, в процентах относительно общего $request_time всех
@@ -209,11 +204,17 @@ def generate_report(report_template, report_name, serialized_dict):
     :param str serialized_dict:
     :return bool:
     """
+
     try:
+        temp_file = tempfile.NamedTemporaryFile(dir=os.path.dirname(report_name))
         with io.open(report_template, mode='r', encoding="utf-8") as template_file, \
-                io.open(report_name, mode='w', encoding="utf-8") as report_file:
-            template = "\n".join(template_file.readlines())
-            report_file.write(re.sub(r'\$table_json', serialized_dict, template))
+                temp_file as tf:
+            tf_fd = tf.fileno()
+            report_file = io.open(tf_fd, mode='w', encoding="utf-8")
+            template = Template("\n".join(template_file.readlines()))
+            table_json = {"table_json": serialized_dict}
+            report_file.write(template.safe_substitute(table_json))
+            os.link(tf.name, report_name)
             logging.info(u"Формирование отчёта закончено. Готовый отчёт: {}".format(report_name))
 
     except IOError, e:
@@ -229,9 +230,7 @@ def update_config_from_file(fname, current_config):
     :param dict current_config:
     :return bool:
     """
-    # Не уверен, но думаю для экономии памяти эту библиотеку лучше импортировать здесь
-    # Так как это не часто "употребляемая" функция
-    import json
+
     loglevel = {
         "INFO": 20,
         "DEBUG": 10,
@@ -252,24 +251,16 @@ def update_config_from_file(fname, current_config):
     return True
 
 
-def parse_arguments():
+def get_config_name():
     """
     Функция парсит аргументы командной строки и возвращает имя конфиг файла (если задан)
     :return str filename:
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default=None, nargs='*', help=u'Путь к конфиг файлу.')
+    parser.add_argument('--config', default=None, const="config.cfg", nargs='?', help=u'Путь к конфиг файлу.')
     args = parser.parse_args()
-
-    # Это конечно не однозначно, но тут мы проверяем не задали ли пользователь --config без указания имени файла?
-    if args.config is not None:
-        if len(args.config) == 0:
-            cfg_file = default_cfg_file
-        else:
-            cfg_file = args.config[0]
-
-        return cfg_file
+    return args.config
 
 
 def init_logging(cfg):
@@ -278,24 +269,14 @@ def init_logging(cfg):
     :param dict cfg:
     :return:
     """
+
+    if cfg["LOGFILE"]:
+        logging_dir = os.path.dirname(cfg["LOGFILE"])
+        if not os.path.exists(logging_dir):
+            raise OSError("Путь к файлу логирования задан не верно: {}! Выходим.".format(logging_dir))
+
     logging.basicConfig(filename=cfg["LOGFILE"], level=cfg["LOGLEVEL"],
                         format=cfg["LOG_FORMAT"], datefmt=cfg["LOG_DATEFMT"])
-
-
-def update_logging(cfg):
-    """
-    Функция обновляет логирование, на основе полученного конфига.
-    :param dict cfg:
-    :return:
-    """
-    log = logging.getLogger()
-    for hdlr in log.handlers[:]:
-        log.removeHandler(hdlr)
-
-    file_handler = logging.FileHandler(cfg["LOGFILE"], 'a')
-    file_handler.setFormatter(logging.Formatter(cfg["LOG_FORMAT"], datefmt=cfg["LOG_DATEFMT"]))
-
-    log.addHandler(file_handler)
 
 
 def prepare_run(cfg):
@@ -304,10 +285,10 @@ def prepare_run(cfg):
     :param dict cfg:
     :return:
     """
+
     # Проверяем папку с логами на существование
     if not os.path.isdir(cfg["LOG_DIR"]):
-        logging.error(u"Каталога с логами {} не существует! Выходим.".format(cfg["LOG_DIR"]))
-        return
+        raise OSError(u"Каталога с логами {} не существует! Выходим.".format(cfg["LOG_DIR"]))
 
     # Проверяем папку с отчётами на существование
     if not os.path.isdir(cfg["REPORT_DIR"]):
@@ -323,27 +304,20 @@ def prepare_run(cfg):
     return True
 
 
-def main():
+def main(cfg):
     # Инициализируем логирование по первоначальному конфигу
-    init_logging(config)
-    # Парсим аргументы командной строки
-    config_file_name = parse_arguments(config)
-    # Если было задано имя конфиг файла, то обновляем локальный конфиг и обновляем логирование
-    if config_file_name:
-        update_config_from_file(config_file_name, config)
-        update_logging(config)
+    init_logging(cfg)
 
     # Если произошла ошибка при подготовке к запуску то выходим
-    if not prepare_run(config):
+    if not prepare_run(cfg):
         return
 
     logging.info(u"Ищем последний файл лога...")
-    last_log = get_recent_log(config["LOG_DIR"], regexprs["LOG_NAME_REGEXP"])
+    last_log = get_recent_log(cfg["LOG_DIR"], regexprs["LOG_NAME_REGEXP"])
     # Для обработки лог файла убедимся в его наличии
     if last_log:
-        log_name, log_date, log_type = last_log
-        logging.info(u"Файл найден: {}".format(log_name))
-        report_name = os.path.join(config["REPORT_DIR"], "report-{}.html".format(log_date.strftime("%Y.%m.%d")))
+        logging.info(u"Файл найден: {}".format(last_log.name))
+        report_name = os.path.join(cfg["REPORT_DIR"], "report-{}.html".format(last_log.date.strftime("%Y.%m.%d")))
         logging.info(u"Проверяем существует ли отчёт по этому файлу:")
 
         if os.path.isfile(report_name):
@@ -351,23 +325,51 @@ def main():
             return
 
         logging.info(u"Отчёт не найден. Приступаем к обработке лог файла.")
-        log_iterator = read_log(os.path.join(config["LOG_DIR"], log_name), log_type)
+        log_iterator = read_log(os.path.join(cfg["LOG_DIR"], last_log.name), last_log.extension)
         result = calculate_statistic(log_iterator, regexprs["NGINX_REGEXP"],
-                                     config["REPORT_SIZE"], config["MAX_ERRORS_PERCENT"])
+                                     cfg["REPORT_SIZE"], cfg["MAX_ERRORS_PERCENT"])
         # Если удалось подсчитать статистику то сформируем отчёт
         if result:
             top_urls, report = result
             serialized_dict = serialize_report_dict(top_urls, report)
             logging.info(u"Обработка закончена. Формируем отчёт.")
-            generate_report(config["REPORT_TEMPLATE"], report_name, serialized_dict)
+            generate_report(cfg["REPORT_TEMPLATE"], report_name, serialized_dict)
 
     else:
         logging.info(u"Файл не найден! Завершаем работу.")
 
 
+def match_log_name(files, regexp):
+    """
+    Функция-генератор, проходится по списку файлов, и возвращает имя лога, дату создания, расширение файла
+    :param files:
+    :param regexp:
+    :return:
+    """
+
+    pattern = re.compile(regexp)
+
+    for file_name in files:
+        match = pattern.search(file_name)
+        if match:
+            try:
+                cur_date = datetime.strptime(match.group(1), '%Y%m%d')
+                yield match.group(0), cur_date, match.group(2)
+            except ValueError as error:
+                logging.error(u"Ошибка парсинга даты.{}\n Завершаем работу.".format(error))
+                raise error
+
+
 if __name__ == "__main__":
     try:
-        main()
+        # Далее конфиг будем перезаписывать, поэтому сделаем копию.
+        cfg = config.copy()
+        config_file_name = get_config_name()
+        # Если было задано имя конфиг файла, то обновляем локальный конфиг и обновляем логирование
+        if config_file_name:
+            update_config_from_file(config_file_name, cfg)
+
+        main(cfg)
     except Exception as e:
         logging.exception(e)
     logging.shutdown()
