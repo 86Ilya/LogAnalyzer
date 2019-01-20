@@ -77,8 +77,9 @@ def read_log(log_full_name, file_type):
 
     f_open = gzip.open if file_type == '.gz' else io.open
     try:
-        for line in f_open(log_full_name, mode='r'):
-            yield line.decode('utf-8')  # Так универсальнее
+        with f_open(log_full_name, mode='r') as log_file:
+            for line in log_file:
+                yield line.decode('utf-8')  # Так универсальнее
     except IOError as error:
         logging.error(u"Проблема с чтением из лог файла: {}".format(error))
         yield None
@@ -206,16 +207,19 @@ def generate_report(report_template, report_name, serialized_dict):
     """
 
     try:
-        temp_file = tempfile.NamedTemporaryFile(dir=os.path.dirname(report_name))
-        with io.open(report_template, mode='r', encoding="utf-8") as template_file, \
-                temp_file as tf:
-            tf_fd = tf.fileno()
-            report_file = io.open(tf_fd, mode='w', encoding="utf-8")
-            template = Template("\n".join(template_file.readlines()))
-            table_json = {"table_json": serialized_dict}
-            report_file.write(template.safe_substitute(table_json))
-            os.link(tf.name, report_name)
-            logging.info(u"Формирование отчёта закончено. Готовый отчёт: {}".format(report_name))
+        with io.open(report_template, mode='r', encoding="utf-8") as template_file:
+            template = Template(template_file.read())
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(report_name)) as temp_file:
+                tf_fd = temp_file.fileno()
+                temp_file_with_encoding = io.open(tf_fd, mode='w', encoding="utf-8")
+                temp_file_with_encoding.write(template.safe_substitute(table_json=serialized_dict))
+                os.link(temp_file.name, report_name)
+
+                # with io.open(tf_fd, mode='w', encoding="utf-8") as temp_file_with_encoding:
+                #     temp_file_with_encoding.write(template.safe_substitute(table_json=serialized_dict))
+                #     os.link(temp_file.name, report_name)
+
+        logging.info(u"Формирование отчёта закончено. Готовый отчёт: {}".format(report_name))
 
     except IOError, e:
         logging.error(u"Ошибка ввода-вывода при создании отчёта. {}\n Завершаем работу.".format(e))
@@ -258,7 +262,7 @@ def get_config_name():
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default=None, const="config.cfg", nargs='?', help=u'Путь к конфиг файлу.')
+    parser.add_argument('--config', default=None, const=default_cfg_file, nargs='?', help=u'Путь к конфиг файлу.')
     args = parser.parse_args()
     return args.config
 
@@ -271,7 +275,7 @@ def init_logging(cfg):
     """
 
     if cfg["LOGFILE"]:
-        logging_dir = os.path.dirname(cfg["LOGFILE"])
+        logging_dir = os.path.dirname(os.path.abspath(cfg["LOGFILE"]))
         if not os.path.exists(logging_dir):
             raise OSError("Путь к файлу логирования задан не верно: {}! Выходим.".format(logging_dir))
 
@@ -371,5 +375,5 @@ if __name__ == "__main__":
 
         main(cfg)
     except Exception as e:
-        logging.exception(e)
+        logging.exception(e.message)
     logging.shutdown()
