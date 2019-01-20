@@ -52,9 +52,9 @@ def get_recent_log(log_dir, regexp):
 
     files = os.listdir(log_dir)
     logs_names_gen = match_log_name(files, regexp)
-    recent_log = logs_names_gen.next()
-
-    if not recent_log:
+    try:
+        recent_log = logs_names_gen.next()
+    except StopIteration:
         return
 
     recent_date = recent_log[1]
@@ -214,10 +214,6 @@ def generate_report(report_template, report_name, serialized_dict):
                 temp_file_with_encoding = io.open(tf_fd, mode='w', encoding="utf-8")
                 temp_file_with_encoding.write(template.safe_substitute(table_json=serialized_dict))
                 os.link(temp_file.name, report_name)
-
-                # with io.open(tf_fd, mode='w', encoding="utf-8") as temp_file_with_encoding:
-                #     temp_file_with_encoding.write(template.safe_substitute(table_json=serialized_dict))
-                #     os.link(temp_file.name, report_name)
 
         logging.info(u"Формирование отчёта закончено. Готовый отчёт: {}".format(report_name))
 

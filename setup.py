@@ -8,7 +8,7 @@ install_requires = [
 
 setup(
     name='LogAnalyzer',
-    version='0.0.3',
+    version='0.0.4',
     author='Ilya Aurov',
     author_email='ilya.aurov@gmail.com',
     url='https://github.com/86Ilya/LogAnalyzer.git',
